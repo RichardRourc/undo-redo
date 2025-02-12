@@ -1,0 +1,245 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <title>撤销重做演示</title>
+    <style>
+        .editor {
+  max-width: 600px;
+  margin: 2rem auto;
+  padding: 1rem;
+  box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+  font-family: system-ui, sans-serif;
+}
+
+textarea {
+  width: 100%;
+  height: 200px;
+  padding: 1rem;
+  border: 2px solid #42b883;
+  border-radius: 4px;
+  resize: vertical;
+  font-size: 16px;
+  line-height: 1.5;
+}
+
+.controls {
+  display: flex;
+  gap: 0.5rem;
+  margin-top: 1rem;
+}
+
+button {
+  padding: 0.5rem 1rem;
+  border: none;
+  border-radius: 4px;
+  background: #42b883;
+  color: white;
+  cursor: pointer;
+  transition: all 0.2s;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+button:disabled {
+  background: #e0e0e0;
+  color: #9e9e9e;
+  cursor: not-allowed;
+}
+
+button:not(:disabled):hover {
+  background: #33a06f;
+  transform: translateY(-1px);
+}
+
+button:active {
+  transform: translateY(0);
+}
+    </style>
+</head>
+<body>
+    <div id="app">
+  <div class="editor">
+    <textarea
+      v-model="editor.content"
+      @keyup="updateSelection"
+      @click="updateSelection"
+      ref="textareaRef"
+    ></textarea>
+    
+    <div class="controls">
+      <button @click="performUndo" :disabled="!canUndo">↩ 撤销 ({{ historyStatus }})</button>
+      <button @click="performRedo" :disabled="!canRedo">↪ 重做</button>
+    </div>
+  </div>
+</div>
+
+    <!-- 使用最新稳定版 Vue 3 -->
+    <script src="https://unpkg.com/vue@3.4.27/dist/vue.global.prod.js"></script>
+    
+    <script>
+        const { createApp, ref, reactive, watch, computed, nextTick } = Vue;
+
+function createHistory(maxSteps = 20) {
+  const state = reactive({
+    stack: [{ content: '', selection: { start: 0, end: 0 } }],
+    index: 0,
+    capacity: maxSteps
+  });
+
+  const validateIndex = () => {
+    state.index = Math.max(0, Math.min(state.index, state.stack.length - 1));
+  };
+
+  const push = (snapshot) => {
+    try {
+      const validSnapshot = {
+        content: String(snapshot?.content || ''),
+        selection: {
+          start: Math.max(0, parseInt(snapshot?.selection?.start) || 0),
+          end: Math.max(0, parseInt(snapshot?.selection?.end) || 0)
+        }
+      };
+
+      state.stack.splice(state.index + 1);
+      state.stack.push(validSnapshot);
+
+      while (state.stack.length > state.capacity) {
+        state.stack.shift();
+        state.index = Math.max(state.index - 1, 0);
+      }
+
+      state.index = state.stack.length - 1;
+    } catch (e) {
+      console.error('History Push Error:', e);
+    }
+  };
+
+  const undo = () => {
+    state.index = Math.max(state.index - 1, 0);
+    validateIndex();
+    return getCurrent();
+  };
+
+  const redo = () => {
+    state.index = Math.min(state.index + 1, state.stack.length - 1);
+    validateIndex();
+    return getCurrent();
+  };
+
+  const getCurrent = () => {
+    try {
+      const item = state.stack[state.index] || { content: '', selection: { start: 0, end: 0 } };
+      return {
+        content: String(item.content),
+        selection: {
+          start: Math.max(0, parseInt(item.selection?.start) || 0),
+          end: Math.max(0, parseInt(item.selection?.end) || 0)
+        }
+      };
+    } catch (e) {
+      console.error('Get Current Error:', e);
+      return { content: '', selection: { start: 0, end: 0 } };
+    }
+  };
+
+  return {
+    state,
+    push,
+    undo,
+    redo,
+    canUndo: computed(() => state.index > 0),
+    canRedo: computed(() => state.index < state.stack.length - 1)
+  };
+}
+
+createApp({
+  setup() {
+    const textareaRef = ref(null);
+    const editor = reactive({
+      content: '',
+      selection: { start: 0, end: 0 }
+    });
+
+    const history = createHistory(20);
+    let isTracking = true;
+    let debounceTimer;
+
+    watch(() => editor.content, () => {
+      if (!isTracking) return;
+      clearTimeout(debounceTimer);
+      debounceTimer = setTimeout(() => {
+        history.push({ ...editor });
+      }, 300);
+    }, { flush: 'post' });
+
+    const updateSelection = () => {
+      if (!textareaRef.value) return;
+      editor.selection.start = textareaRef.value.selectionStart;
+      editor.selection.end = textareaRef.value.selectionEnd;
+    };
+
+    const performUndo = () => {
+      try {
+        if (!history.canUndo.value) return;
+        isTracking = false;
+
+        const snapshot = history.undo();
+        editor.content = snapshot.content;
+        editor.selection = { ...snapshot.selection };
+
+        nextTick(() => {
+          if (textareaRef.value) {
+            textareaRef.value.selectionStart = snapshot.selection.start;
+            textareaRef.value.selectionEnd = snapshot.selection.end;
+            textareaRef.value.focus();
+          }
+          setTimeout(() => isTracking = true, 50);
+        });
+      } catch (e) {
+        console.error('Undo Error:', e);
+        isTracking = true;
+      }
+    };
+
+    const performRedo = () => {
+      try {
+        if (!history.canRedo.value) return;
+        isTracking = false;
+
+        const snapshot = history.redo();
+        editor.content = snapshot.content;
+        editor.selection = { ...snapshot.selection };
+
+        nextTick(() => {
+          if (textareaRef.value) {
+            textareaRef.value.selectionStart = snapshot.selection.start;
+            textareaRef.value.selectionEnd = snapshot.selection.end;
+            textareaRef.value.focus();
+          }
+          setTimeout(() => isTracking = true, 50);
+        });
+      } catch (e) {
+        console.error('Redo Error:', e);
+        isTracking = true;
+      }
+    };
+
+    return {
+      editor,
+      textareaRef,
+      performUndo,
+      performRedo,
+      updateSelection,
+      canUndo: history.canUndo,
+      canRedo: history.canRedo,
+      historyStatus: computed(() => 
+        `${history.state.index + 1}/${history.state.stack.length}`
+      )
+    };
+  }
+}).mount('#app');
+    </script>
+</body>
+</html>
